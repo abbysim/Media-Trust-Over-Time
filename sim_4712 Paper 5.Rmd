@@ -1,0 +1,409 @@
+---
+author: "Abby Sim"
+title: "Analyzing the Factors Influencing Media Trust Over Time"
+output:
+  word_document: default
+date: "2023-05-05"
+---
+```{r setup, include=FALSE}
+library(formatR)               
+library(tidyverse)          
+library(foreign)                
+library(ggcorrplot)            
+library(psych)                           
+library(forecast)     
+library(car)
+library(prais)
+library(sandwich)
+library(ecm)
+library(orcutt)
+library(dplyr)
+
+set.seed(20136)     
+```
+
+## Theory
+The American public’s trust in media is at a record low: according to Gallup, trust in media has decreased from 72% less than 50 years ago to 34% today. This paper explores how the Americans’ trust in the news media has changed over time in response to trends in political polarization, social media usage, media freedom, and government trust. 
+
+![](Data/paper5path.png)
+
+As depicted in the causal flow chart above, this paper proposes that each exogeneous variable has a direct causal impact on the public’s trust in news media.
+* Political polarization: In line with Robert Vallone’s hostile media effect — a social psychology theory that refers to the tendency for individuals with strong preexisting attitudes on an issue to perceive media coverage as biased against their side — this paper theorizes that higher levels of polarization in American politics leads to lower levels of trust in the media. In addition, because the news media industry caters to consumers and individuals are more likely to seek out information that aligns with their pre-existing worldviews, the media industry might harness partisan bias to appeal to viewers during times of increased political polarization, causing increased distrust in media.   
+* Social Media Usage: With increased social media usage comes increased misinformation and increased skepticism towards the news media. As more and more Americans gain access to alternative forms of news coverage that might contradict or undermine the traditional news media and circulate misinformation, public trust in media declines.  
+* Freedom of the press: Freedom of the press refers to the ability of print, broadcast, and digital media to operate freely and without threat of repercussions. It encapsulates the editorial independence of both state-owned and privately owned outlets; access to information and sources; official censorship and self-censorship; the diversity of news available; and the transparency and concentration of media ownership.  The freer a country’s press is, the more likely it is that the public will trust the news media they consume to be transparent and unbiased. 
+* Trust in government: During times where public trust in government increases, trust in the media is also likely to increase.  When Americans trust the political process, the opinions of experts, and official government accounts of events, they are also more likely to trust the news media institution.  
+
+
+## Data
+To operationalize this theory, this paper uses data aggregated from Pew Research Center’s Core Trends surveys conducted annually on national samples of approximately 1500 adults via telephone interviews; the Gallup Poll Social Surveys administered annually on national samples of at least 1000 adults via telephone interviews; Voteview, a dataset on every congressional role call in American history; and Freedom House’s Freedom of the Press report, an annual report on media independence around the world. This paper focuses its analyses on the years 1985 to 2022, providing a set of 38 data points, and utilizes the United States over time as its unit of analysis. 
+
+
+The variables used by this paper are:
+1. `Trust`, representing the percentage of the American public reporting “a great deal/fair amount of trust in the media.” 
+2. `Polar`, representing the difference between the mean DW-NOMINATE scores of Senate Republicans and Senate Democrats. DW-NOMINATE scores are used widely to describe the political ideology of political actors, political parties and political institutions: a score closer to -1 is considered liberal, while a score closer to 1 is considered conservative. As a result, this variable, which measures the difference between the mean scores of Senate Republicans and Senate Democrats, theoretically ranges from 0 to 2. The bigger the Polar value is, the higher the level of political polarization.
+3. `Social`, representing the percentage of the American public using any form of social media.
+4. `Freedom`, representing the United States’ media independence using Freedom House’s Freedom of the Press index. This index assigns countries a total score from 0 (most free) to 100 (least free) based on a set of 23 methodology questions and 109 indicators divided into three broad categories covering the legal, political, and economic environment. The bigger Free is, the less independent the media is. 
+5. `Gov.App`, representing the percentage of the American public reporting that they “trust the government to do what is right always/most of the time.” 
+
+According to this operationalization, I hypothesize that the effect of `Polar` on `Trust` is negative (i.e. time periods with higher levels of political polarization see lower media trust); the effect of `Social` on `Trust` is negative (i.e. time periods with higher social media usage see lower media trust); the effect of `Freedom` on `Trust` is negative (i.e. time periods where press freedom is more inhibited see lower media trust); and the effect of `Gov.App` on `Trust` is positive (i.e. time periods with higher levels of governmental trust see lower media trust). 
+
+```{r}
+media <- na.omit(read.csv("Data/media44.csv")[6:43,1:7])
+media 
+
+cat("The dataset has", paste(dim(media)[1]), "observations, and", paste(dim(media)[2]-2), " variables for each one of them", '\n')
+
+descr::freq(ordered(media$Trust), plot = F)
+descr::freq(ordered(media$Polar), plot = F)
+descr::freq(ordered(media$Social), plot = F)
+descr::freq(ordered(media$Freedom), plot = F)
+descr::freq(ordered(media$Gov.App), plot = F)
+
+plotmedia <- media %>% dplyr::select(Year, Trust, Polar, Social, Freedom, Gov.App) %>% gather(key = "variable", value = "value", -Year)
+
+ggplot(plotmedia, aes(x = Year, y = value)) + 
+  geom_line(aes(color = variable), size = 1) +
+  scale_color_manual(values = c("#00AFBB", "#E7B800", "#10bb00", "#bb1c00", "#bb6d00")) +
+  theme_minimal()
+
+```
+
+```{r}
+media2 <- media[c("Trust", "Polar", "Social", "Freedom", "Gov.App")]
+corr <- round(cor(media2, use = "complete.obs"), 2)
+
+ggcorrplot(corr, type = "full", lab = TRUE,
+           outline.col = "white",
+           ggtheme = ggplot2::theme_gray,
+           colors = c("#E46726", "white", "#6D9EC1"), 
+           lab_col = "black", lab_size = 2, 
+           tl.cex = 8, tl.col = "black")
+```
+
+The correlation matrix supports the paper’s theory regarding the direction of the relationships between Trust and the other variables: `Polar`, `Social`, and `Freedom` and negatively correlated with `Trust`, while `Gov.App` is positively correlated with it. However, this correlation matrix demonstrates extremely high levels of multicollinearity, especially between the `Freedom`, `Social`, and `Polar` variables. Multicollinearity could potentially make it difficult to test individual regression coefficients due to inflated standard errors and unstable parameter estimates. 
+
+## Statistical analysis
+
+### OLS Regression
+```{r}
+## OLS Regression Model
+mod1 <- lm(Trust ~ Polar+Social+Freedom+Gov.App, data = media)
+summary(mod1)
+```
+
+### Testing for non-stationarity: Time plots
+The first step in analyzing a time series models entails testing for non-stationarity, a potential indication of spurious regression. If a series is non-stationary, it is important to evaluate whether common patterns of trending lead to artificially enhanced correlations and, as a result, spurious inferences within the model.
+```{r}
+ggplot(media, aes(x = Year, y = Trust)) + geom_line(color="#bb6d00", size = 1) + ylab("Trust in Media")
+# As an informal test of non-stationarity, we examine the time plots of each variable. This plot of Trust in Media over time suggests that Trust in Media is non-stationary (i.e. its mean and variance are not constant). However, its trend appears generally linear/constant, and as a result, there is a possibility for stationarity once time is controlled for.  
+
+ggplot(media, aes(x = Year, y = Polar)) + geom_line(color = "#10bb00", size = 1) + ylab("Political Polarization")
+# This plot of Political Polarization over time suggests that this variable is non-stationary (i.e. its mean and variance are not constant).  
+
+ggplot(media, aes(x = Year, y = Social)) + geom_line(color = "#bb1c00", size = 1) + ylab("Social Media Usage")
+# This plot of Social Media Usage over time suggests that this variable is non-stationary (i.e. its mean and variance are not constant).  
+
+ggplot(media, aes(x = Year, y = Freedom)) + geom_line(color = "#00AFBB", size = 1) + ylab("Freedom of the Press")
+# This plot of Freedom of Press over time suggests that this variable is non-stationary (i.e. its mean and variance are not constant).  
+
+ggplot(media, aes(x = Year, y = Gov.App)) + geom_line(color = "#E7B800", size = 1) + ylab("Trust in Government")
+# This plot of Trust in Government over time suggests that this variable is non-stationary (i.e. its mean and variance are not constant).
+```
+
+### Testing for non-stationarity: Auto-correlation function
+```{r}
+Acf(media$Trust)
+# Autocorrelation plots indicating stationarity drop off to 0 extremely quickly and stay at 0. The ACF plot of the Trust in Media variable does not drop off quickly enough and as a result indicates non-stationarity. 
+
+Acf(media$Polar)
+# The ACF plot of the Political Polarization variable does not drop off quickly enough and as a result indicates non-stationarity. 
+
+Acf(media$Social)
+# The ACF plot of the Social Media Usage variable does not drop off quickly enough and as a result indicates non-stationarity. 
+
+Acf(media$Freedom)
+# The ACF plot of the Prses Freedom variable does not drop off quickly enough and as a result indicates non-stationarity. 
+
+Acf(media$Gov.App)
+# The ACF plot of the Government Trust variable does not drop off quickly enough and as a result indicates non-stationarity. 
+```
+
+### Testing for non-stationarity: Dickey-Fuller tests
+
+#### Dickey-Fuller test for trust in media
+```{r}
+media$Trust.Lag  <- sapply(1:nrow(media), function(x) media$Trust[x-1])
+media$Trust.Lag  <- car::recode(as.numeric(media$Trust.Lag),"numeric(0)=NA")
+
+media$Diff.Trust <- media$Trust-media$Trust.Lag
+
+# Regress first difference on the lagged variable
+dftrust1 <- lm(Diff.Trust ~ Trust.Lag, data = media)
+summary(dftrust1)
+
+durbinWatsonTest(dftrust1)
+```
+Since the tau-value generated from regressing the first difference on the lagged trust variable is -1.506 and the Dickey-Fuller critical value for a sample size of 37 is ≈-3.00, we cannot reject the null hypothesis that there is a unit root (i.e. non-stationarity) for the trust variable.
+
+However, since dL=1.36 (or equivalently 2.64) and dU=1.59 (or equivalently 2.41) for a model with k=2,n=37 and this model’s Durbin-Watson statistic is 2.698, there is evidence of serial correlation. As a result, we cannot rely on this version of the Dickey-Fuller equation.
+
+```{r}
+# Regress first difference on the lagged variable and the time variable
+dftrust2 <- lm(Diff.Trust ~ Trust.Lag + Year, data = media)
+summary(dftrust2)
+
+durbinWatsonTest(dftrust2)
+```
+The next Dickey-Fuller equation regresses the first difference on the lagged trust variable and the time variable. Running a Durbin-Watson test on this version of the equation generates a statistic of 1.98. Since there is evidence of no serial correlation, we can use this equation to evaluate the model’s non-stationarity.
+
+Since the tau-value generated by running the Dickey-Fuller test on this model is -6.007 and the critical value for a sample size of 37 is ≈-3.60, we reject the null hypothesis that there is a unit root and conclude that the Trust variable is stationary when time is controlled for.
+
+#### Dickey-Fuller test for political polarization
+```{r}
+media$Polar.Lag  <- sapply(1:nrow(media), function(x) media$Polar[x-1])
+media$Polar.Lag  <- car::recode(as.numeric(media$Polar.Lag),"numeric(0)=NA")
+
+media$Diff.Polar <- media$Polar-media$Polar.Lag
+
+# Regress first difference on the lagged variable
+dfpolar1 <- lm(Diff.Polar ~ Polar.Lag, data = media)
+summary(dfpolar1)
+
+durbinWatsonTest(dfpolar1)
+```
+Since dL=1.36 (or equivalently 2.64) and dU=1.59 (or equivalently 2.41) for k=2 and n=37 and the Durbin-Watson statistic is 2.54, there is evidence of potential serial correlation. As a result, we cannot use this version of the Dickey-Fuller equation.
+
+```{r}
+# Regress first difference on the lagged variable and the time variable
+dfpolar2 <- lm(Diff.Polar ~ Polar.Lag + Year, data = media)
+summary(dfpolar2)
+
+durbinWatsonTest(dfpolar2)
+```
+For k=3 and n=36 (since we lose an observation due to the addition of another lag), dL=1.30 (or equivalently 2.70) and dU=1.65 (or equivalently 2.35). Since the Durbin-Watson statistic is 2.44, there is still evidence of potential serial correlation and we cannot use this version of the Dickey-Fuller equation.
+
+
+```{r}
+# Augmented Dickey-Fuller Test  
+media$Diff.Polar.Lag <- sapply(1:nrow(media), function(x) media$Diff.Polar[x-1])
+media$Diff.Polar.Lag <- car::recode(as.numeric(media$Diff.Polar.Lag), "numeric(0)=NA")
+
+# Regress the difference variable on the lagged variable, the time/trend variable and the lagged difference variable
+dfpolar3 <- lm(Diff.Polar ~ Polar.Lag + Year + Diff.Polar.Lag, data = media)
+summary(dfpolar3)
+
+durbinWatsonTest(dfpolar3)
+```
+For k=4, n=35: dL=1.22 (or equivalently 2.78) and dU=1.73 (or equivalently 2.27). Since the Durbin-Watson statistic is 1.87, there is evidence of no serial correlation and we can use this augmented Dickey-Fuller equation. 
+
+Since the tau-value generated from regressing the first difference on the lagged trust variable and the time variable is -1.310 and the Dickey-Fuller critical value for a sample size of 37 is ≈-3.60, we cannot reject the null hypothesis that there is a unit root and conclude that the Political Polarization variable is non-stationary. 
+
+
+#### Dickey-Fuller test for Social Media Use
+```{r}
+media$Social.Lag  <- sapply(1:nrow(media), function(x) media$Social[x-1])
+media$Social.Lag  <- car::recode(as.numeric(media$Social.Lag),"numeric(0)=NA")
+
+media$Diff.Social <- media$Social-media$Social.Lag
+
+# Regress first difference on the lagged variable
+dfsocial1 <- lm(Diff.Social ~ Social.Lag, data = media)
+summary(dfsocial1)
+
+durbinWatsonTest(dfsocial1)
+```
+For k=2, n=37, dL=1.36 (or equivalently 2.64) and dU=1.59 (or equivalently 2.41). Since the Durbin-Watson statistic is 0.757, there is strong evidence of serial correlation and we cannot use this version of the Dickey-Fuller equation.  
+```{r}
+# Regress first difference on the lagged variable and the time variable
+dfsocial2 <- lm(Diff.Social ~ Social.Lag + Year, data = media)
+summary(dfsocial2)
+
+durbinWatsonTest(dfsocial2)
+```
+For Durbin-Watson statistic for k=3, n=36: dL=1.30 (or equivalently 2.70) and dU=1.65 (or equivalently 2.35). Since the Durbin-Watson statistic is 0.843, there is still strong evidence of serial correlation and we cannot use this version of the Dickey-Fuller equation. 
+
+```{r}
+# Augmented Dickey-Fuller Test  
+media$Diff.Social.Lag <- sapply(1:nrow(media), function(x) media$Diff.Social[x-1])
+media$Diff.Social.Lag <- car::recode(as.numeric(media$Diff.Social.Lag), "numeric(0)=NA")
+
+# Regress the difference variable on the lagged variable, the time/trend variable and the lagged difference variable
+dfsocial3 <- lm(Diff.Social ~ Social.Lag + Year + Diff.Social.Lag, data = media)
+summary(dfsocial3)
+
+durbinWatsonTest(dfsocial3)
+```
+For k=4, n=35, dL=1.22 (or equivalently 2.78) and dU=1.73 (or equivalently 2.27). Since the Durbin-Watson statistic is 2.47, there is evidence of potential serial correlation and we cannot use this version of the Dickey-Fuller equation.
+
+```{r}
+media$Diff.Social.Lag2 <- sapply(1:nrow(media), function(x) media$Diff.Social.Lag[x-1])
+media$Diff.Social.Lag2 <- car::recode(as.numeric(media$Diff.Social.Lag2), "numeric(0)=NA")
+
+dfsocial4 <- lm(Diff.Social ~ Social.Lag + Year + Diff.Social.Lag + Diff.Social.Lag2, data = media)
+summary(dfsocial4)
+
+durbinWatsonTest(dfsocial4)
+```
+I added another lag to the augmented Dickey-Fuller equation since the model continues to report serial correlation. For k=5, n=34, dL=1.14 (or equivalently 2.86) and dU=1.81 (or equivalently 2.19). Since the Durbin-Watson statistic generated from this further lagged model is 2.37, there is still evidence of potential serial correlation and we cannot use this version of the Dickey-Fuller equation. 
+
+```{r}
+media$Diff.Social.Lag3 <- sapply(1:nrow(media), function(x) media$Diff.Social.Lag2[x-1])
+media$Diff.Social.Lag3 <- car::recode(as.numeric(media$Diff.Social.Lag3), "numeric(0)=NA")
+
+dfsocial5 <- lm(Diff.Social ~ Social.Lag + Year + Diff.Social.Lag + Diff.Social.Lag2 + Diff.Social.Lag3, data = media)
+summary(dfsocial5)
+
+durbinWatsonTest(dfsocial5)
+```
+After adding a third lag to the Dickey-Fuller equation, the Durbin-Watson test returns a statistic of 1.91, providing evidence of no serial correlation and allowing us to rely on this version of the equation. 
+
+Since the tau-value generated is -3.366 and the Dickey-Fuller critical value for a sample size of 33 is ≈-3.60, we cannot reject the null hypothesis that there is a unit root and conclude that the trend of the Social Media Usage variable is non-stationary. 
+
+#### Dickey-Fuller test for Freedom of Press
+```{r}
+media$Free.Lag  <- sapply(1:nrow(media), function(x) media$Freedom[x-1])
+media$Free.Lag  <- car::recode(as.numeric(media$Free.Lag),"numeric(0)=NA")
+
+media$Diff.Free <- media$Freedom-media$Free.Lag
+
+# Regress first difference on the lagged variable
+dffree1 <- lm(Diff.Free ~ Free.Lag, data = media)
+summary(dffree1)
+
+durbinWatsonTest(dffree1)
+```
+For k=2,n=37, dL=1.36 (or equivalently 2.64) and dU=1.59 (or equivalently 2.41). Since the Durbin-Watson statistic generated by regressing the lagged freedom variable on the first difference is 2.708, there is evidence of potential serial correlation and we cannot use this version of the Dickey-Fuller equation.
+
+```{r}
+# Regress first difference on the lagged variable and the time variable
+dffree2 <- lm(Diff.Free ~ Free.Lag + Year, data = media)
+summary(dffree2)
+
+durbinWatsonTest(dffree2)
+```
+The Durbin-Watson statistic for this version of the Dickey-Fuller equation is 2.34. For k=3 and n=36, dL=1.30 (or equivalently 2.70) and dU=1.65 (or equivalently 2.35). As a result, there is evidence of no serial correlation and we can use this version of the Dickey-Fuller equation. 
+
+Regressing the first difference on the lagged freedom variable and the time variable generates a tau-value of -3.912. Since the Dickey-Fuller critical value for a sample size of 36 is ≈-3.60, we can reject the null hypothesis that there is a unit root and conclude that the trend of the Freedom of Press variable is stationary. 
+
+#### Dickey-Fuller test for Government Approval
+```{r}
+media$Gov.App.Lag  <- sapply(1:nrow(media), function(x) media$Gov.App[x-1])
+media$Gov.App.Lag  <- car::recode(as.numeric(media$Gov.App.Lag),"numeric(0)=NA")
+
+media$Diff.Gov.App <- media$Polar-media$Gov.App.Lag
+
+# Regress first difference on the lagged variable
+dfgov1 <- lm(Diff.Gov.App ~ Gov.App.Lag, data = media)
+summary(dfgov1)
+
+durbinWatsonTest(dfgov1)
+```
+Since the Durbin-Watson statistic for this version of the Dickey-Fuller equation is 0.370, there is evidence of strong serial correlation and we must add a t-value to the equation.
+
+```{r}
+# Regress first difference on the lagged variable and the time variable
+dfgov2 <- lm(Diff.Gov.App ~ Gov.App.Lag + Year, data = media)
+summary(dfgov2)
+
+durbinWatsonTest(dfgov2)
+```
+Since the Durbin-Watson statistic is still very low (0.415) even after adding the time variable, we cannot use this version of the equation and must proceed onto the augmented Dickey-Fuller test.
+
+```{r}
+# Augmented Dickey-Fuller Test  
+media$Diff.Gov.App.Lag <- sapply(1:nrow(media), function(x) media$Diff.Gov.App[x-1])
+media$Diff.Gov.App.Lag <- car::recode(as.numeric(media$Diff.Gov.App.Lag), "numeric(0)=NA")
+
+# Regress the difference variable on the lagged variable, the time/trend variable and the lagged difference variable
+dfgov3 <- lm(Diff.Gov.App ~ Gov.App.Lag + Year + Diff.Gov.App.Lag, data = media)
+summary(dfgov3)
+
+durbinWatsonTest(dfgov3)
+```
+The augmented Dickey-Fuller test still shows signs of strong serial correlation (since dw=0.512). As a result, I continued to add further lags.
+
+```{r}
+media$Diff.Gov.App.Lag2 <- sapply(1:nrow(media), function(x) media$Diff.Gov.App.Lag[x-1])
+media$Diff.Gov.App.Lag2 <- car::recode(as.numeric(media$Diff.Gov.App.Lag2), "numeric(0)=NA")
+
+dfgov4 <- lm(Diff.Gov.App ~ Gov.App.Lag + Year + Diff.Gov.App.Lag + Diff.Gov.App.Lag2, data = media)
+summary(dfgov4)
+
+durbinWatsonTest(dfgov4)
+```
+Since the dw=0.447, there is evidence of potential serial correlation and we cannot use this version of the Dickey-Fuller equation.
+
+```{r}
+media$Diff.Gov.App.Lag3 <- sapply(1:nrow(media), function(x) media$Diff.Gov.App.Lag2[x-1])
+media$Diff.Gov.App.Lag3 <- car::recode(as.numeric(media$Diff.Gov.App.Lag3), "numeric(0)=NA")
+
+dfgov5 <- lm(Diff.Gov.App ~ Gov.App.Lag + Year + Diff.Gov.App.Lag + Diff.Gov.App.Lag2 + Diff.Gov.App.Lag2, data = media)
+summary(dfgov5)
+
+durbinWatsonTest(dfgov5)
+```
+Despite adding several lags to the model, the serial correlation persits. Nevertheless, all the Dickey-Fuller equations suggest that the Government Trust variable is non-stationary (i.e. all the tau-values generated are less than the Dickey-Fuller critical value of 3.60).
+
+### Adjusting for non-stationarity: Cointegration
+```{r}
+# Residuals of original regression
+mod4 <- lm(Trust ~ Polar+Social+Freedom+Gov.App, data = media)
+summary(mod4)
+
+media$res2 <- residuals(mod4)
+
+# Create first difference of residuals
+media$res2lag <- sapply(1:nrow(media), function(x) media$res2[x-1])
+media$res2lag <- car::recode(as.numeric(media$res2lag), "numeric(0)=NA")
+media$difres2 <- media$res2-media$res2lag
+
+# Dickey-Fuller test
+mod5 <- lm(difres2 ~ res2lag, data = media)
+summary(mod5)
+  
+durbinWatsonTest(mod5)
+```
+Performing these Dickey-Fuller tests reveals that the trends of the Trust in Media and Freedom of the Press variable are stationary, while Political Polarization, Social Media Usage, and Government Trust (and their trends) are all non-statioinary. Since we can only be confident that spurious regression is not interfering with our analysis if ALL variables are stationary, we test for co-integration to determine if the nature of the non-stationary present in `Polar`,`Social`, and `Gov.App` is similar. 
+
+Since the tau-value generated from regressing the difference in residuals on the lagged residuals is -4.528 and the critical Dickey-Fuller value for 38 observations is ≈-3.00, we reject the null hypothesis that there is a unit root (i.e. that there is non-stationarity). Since the effect of the residual lag term on the difference is residuals is stationary, we can conclude that the model is cointegrated. In other words, the original OLS model is non-spurious.  
+
+
+### Testing for serial correlation
+Once the model has been proven to be cointegrated, it is important to test for another common issue in time series analysis: serial correlation.  Serially correlated models can lead to underestimated standard errors and exaggerated estimations of goodness of fit.  
+```{r}
+durbinWatsonTest(mod1)
+```
+Using the Durbin-Watson test to test for serial correlation in the OLS model generates a statistic of 1.31. Since the dL = 1.261 and dU = 1.722 for a model with n=38 and k=4, there is evidence of potential serial correlation.
+
+### Adjusting for serial correlation: Prais-Winsten standard errors
+To determine if the serial correlation occurs as a consequence of a misspecified functional form, I use scatter plots comparing  each predictor variable against the response variable Trust in Media to informally test whether the relationships are non-linear.
+
+```{r}
+plot(media$Polar, media$Trust)
+# The relationship between Media Trust and Political Polarization appears to be negative and generally linear. 
+
+plot(media$Social, media$Trust)
+# The relationship between Media Trust and Social Media Usage appears to be negative and generally linear. 
+
+plot(media$Freedom, media$Trust)
+# The relationship between Media Trust and Media Freedom appears to be negative and generally linear. 
+
+plot(media$Gov.App, media$Trust)
+# The relationship between Media Trust and Government Trust appears to be positive and generally linear. Since none of the relationships seem to be misspecified, we assume the model’s serial correlation is pure. 
+```
+
+```{r}
+pw <- prais_winsten(Trust ~ Polar+Social+Freedom+Gov.App, data = media, index="Year")
+summary(pw)
+```
+
+## Conclusion: Comparison
+```{r}
+compare <- na.omit(tibble(coefficients = c( "Intercept", "Political Polarization", "Social Media Usage", "Freedom of Press", "Government Trust"),OLS = c(summary(mod1)$coef[,1]), PW = c(summary(pw)$coef[,1]),OLS.Std.Err = c(summary(mod1)$coef[,2]),PW.Std.Err = c(summary(pw)$coef[,2]),OLS.Sig = c(summary(mod1)$coef[,4]),PW.Sig = c(summary(pw)$coef[,4])))
+data.frame(compare)
+```
+The above table compares the OLS model’s coefficient estimates, standard errors, and p-values with the adjusted versions generated using the Prais-Winsten procedure. Comparing the two models, it appears that adjusting for serial correlation causes the magnitude of nearly every variable’s effect to decrease (the effect of Polar decreases from |-10.21| to |5.96|, the effect of Social Media Usage decreases from |0.066| to |-0.022|, and the effect of Press Freedom decreases from |-1.842| to |-1.521|).  In addition, the Prais-Winsten adjustments increase all of the OLS model’s standard errors and p-values, suggesting that serial correlation made the model’s parameter estimates appear more precise than they actually are. After adjusting for serial correlation, the variables for Freedom of Press and Government Trust lose their statistical significance at the 0.05 level. 
+
+Notably, the Prais-Winsten model switches the sign/direction of effect for both Political Polarization and Social Media Usage ¬– a potential indicator of multicollinearity, which aligns with the findings of the initial correlation matrix. 
+
+Since the Prais-Winsten version of the model adjusts for serial correlation, it is the preferred model. Interpreting the adjusted coefficients, a 1%-increase in political polarization leads to a 5.96%-increase in media trust; a 1%-increase in social media usage leads to a 0.02%-decrease in media trust; a 1-unit increase in the score of media independence (indicating a decline in press freedom) leads to a 1.84%-decrease in media trust, and a 1%-increase in government trust leads to a 0.27%-increase in media trust. The direction of the Social, Freedom, and Gov.App variables within the model support the paper’s causal theory; however, the direction of the Political Polarization effect is positive, which suggests that increased political polarization leads to increased media trust over time and contradicts the initial theory.  
